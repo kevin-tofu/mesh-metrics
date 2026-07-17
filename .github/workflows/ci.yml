@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system libraries for VTK/PyVista
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgl1 libegl1 libxrender1 libxkbcommon-x11-0
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Configure Poetry
+        run: poetry config virtualenvs.in-project true
+
+      - name: Cache virtual environment
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py312-${{ hashFiles('pyproject.toml', 'poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-py312-
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Check package metadata
+        run: poetry check
+
+      - name: Run tests
+        env:
+          MPLBACKEND: Agg
+          PYVISTA_OFF_SCREEN: "true"
+        run: xvfb-run -a poetry run pytest -q
