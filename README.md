@@ -30,14 +30,19 @@ pip install "mesh-metrics[fluxfem]"
 pip install "mesh-metrics[all]"
 ```
 
-For local development:
+For local development with Poetry:
 
 ```bash
 git clone git@github.com:kevin-tofu/mesh-metrics.git
 cd mesh-metrics
+python -m pip install --user pipx
+pipx install poetry
 poetry install --with dev
+poetry run mesh-metrics --help
 poetry run pytest -q
 ```
+
+`poetry install --with dev` installs the package in editable mode together with the development dependency group. If your shell cannot find `mesh-metrics` directly, use `poetry run mesh-metrics ...` inside the repository.
 
 MMG3D is not bundled. Install `mmg3d` separately and make sure it is available on `PATH`, or pass `--mmg3d-bin`.
 
@@ -220,11 +225,32 @@ This is useful when one selected surface should remain fine while the rest of th
 
 ## Development
 
+Set up the repository:
+
 ```bash
+git clone git@github.com:kevin-tofu/mesh-metrics.git
+cd mesh-metrics
 poetry install --with dev
+```
+
+Run the local checks:
+
+```bash
+poetry run mesh-metrics --help
 poetry run pytest -q
 poetry check
 poetry build
 ```
+
+When dependencies change, update the lock file and verify the package again:
+
+```bash
+poetry lock
+poetry install --with dev
+poetry run pytest -q
+poetry build
+```
+
+The GitHub Actions workflow runs `poetry install --with dev`, `poetry check`, and `pytest` on Python 3.12.
 
 The package is licensed under the Apache License 2.0.
