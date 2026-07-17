@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 
 from mesh_metrics.cli import _damped_facet_sizes, _iteration_convergence_checks, _load_facet_labels
 from mesh_metrics.compare import MeshComparison
@@ -115,6 +116,112 @@ def test_mesh_geometry_exposes_facet_geometry():
     assert facets.nfacets == 3
     assert facets.nodes_per_facet == 2
     assert facets.label_indices()["edge"].tolist() == [1]
+
+
+def test_from_skfem_accepts_common_mesh_types():
+    skfem = pytest.importorskip("skfem")
+    mesh_factories = [
+        skfem.MeshLine,
+        skfem.MeshTri,
+        skfem.MeshQuad,
+        skfem.MeshTet,
+        skfem.MeshHex,
+    ]
+
+    for factory in mesh_factories:
+        sk_mesh = factory().refined(1)
+        mesh = MeshGeometry.from_skfem(sk_mesh)
+        stats = MeshStatistics.from_mesh(mesh)
+
+        assert mesh.backend == "skfem"
+        assert mesh.dimension == sk_mesh.p.shape[0]
+        assert mesh.npoints == sk_mesh.p.shape[1]
+        assert mesh.nelements == sk_mesh.t.shape[1]
+        assert mesh.nfacets == sk_mesh.facets.shape[1]
+        assert stats.elements.measure.count == mesh.nelements
+        assert stats.facets.measure.count == mesh.nfacets
+        assert np.isfinite(stats.elements.edge_aspect_ratio.mean)
+
+
+def test_from_skfem_preserves_boundary_labels():
+    skfem = pytest.importorskip("skfem")
+    sk_mesh = skfem.MeshTri().refined(2).with_boundaries(
+        {
+            "left": lambda x: np.isclose(x[0], 0.0),
+            "right": lambda x: np.isclose(x[0], 1.0),
+        }
+    )
+
+    mesh = MeshGeometry.from_skfem(sk_mesh)
+    stats = MeshStatistics.from_mesh(mesh)
+
+    assert mesh.facet_labels is not None
+    assert set(mesh.facet_labels.groups) == {"left", "right"}
+    assert stats.facets.labels["left"].measure.count > 0
+    assert stats.facets.labels["right"].diameter.count > 0
+
+
+def test_from_object_accepts_fluxfem_style_row_major_arrays():
+    class FluxStyleMesh:
+        points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        elements = np.asarray([[0, 1, 2, 3]])
+        faces = np.asarray([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])
+        facet_labels = {"wall": [0, 1, 2], "outlet": [3]}
+
+    mesh = MeshGeometry.from_object(FluxStyleMesh(), backend="fluxfem")
+    stats = MeshStatistics.from_mesh(mesh)
+
+    assert mesh.backend == "fluxfem"
+    assert mesh.points.shape == (3, 4)
+    assert mesh.elements.shape == (4, 1)
+    assert mesh.facets is not None
+    assert mesh.facets.shape == (3, 4)
+    assert np.isclose(stats.elements.measure.total, 1.0 / 6.0)
+    assert stats.facets.labels["wall"].measure.count == 3
+
+
+def test_from_object_accepts_callable_fluxfem_style_accessors():
+    class CallableFluxStyleMesh:
+        boundary_labels = {"edge": [0, 2]}
+
+        def coordinates(self):
+            return np.asarray([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+
+        def connectivity(self):
+            return np.asarray([[0, 1, 2]])
+
+        def edges(self):
+            return np.asarray([[0, 1], [1, 2], [2, 0]])
+
+    mesh = MeshGeometry.from_object(CallableFluxStyleMesh(), backend="fluxfem")
+    stats = MeshStatistics.from_mesh(mesh)
+
+    assert mesh.points.shape == (2, 3)
+    assert mesh.elements.shape == (3, 1)
+    assert mesh.facets is not None
+    assert mesh.facets.shape == (2, 3)
+    assert stats.elements.measure.total == 0.5
+    assert stats.facets.labels["edge"].diameter.count == 2
+
+
+def test_from_object_preserves_t_connectivity_as_nodes_first():
+    class TStyleMesh:
+        points = np.asarray([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        t = np.asarray([[0], [1], [2]])
+        facets = np.asarray([[0, 1, 2], [1, 2, 0]])
+
+    mesh = MeshGeometry.from_object(TStyleMesh(), backend="fluxfem")
+
+    assert mesh.elements.shape == (3, 1)
+    assert mesh.facets is not None
+    assert mesh.facets.shape == (2, 3)
 
 
 def test_load_facet_labels_json(tmp_path):

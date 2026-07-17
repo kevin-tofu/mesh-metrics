@@ -167,16 +167,16 @@ class MeshGeometry:
         facet_names = ("facets", "faces", "edges", "boundary_facets")
         facet_label_names = ("facet_labels", "boundary_labels", "boundaries")
 
-        points = _first_attr(mesh, point_names)
-        elements = _first_attr(mesh, element_names)
-        facets = _first_attr(mesh, facet_names, required=False)
+        point_name, points = _first_named_attr(mesh, point_names)
+        element_name, elements = _first_named_attr(mesh, element_names)
+        facet_name, facets = _first_named_attr(mesh, facet_names, required=False)
         facet_labels = _first_attr(mesh, facet_label_names, required=False)
         if points is None or elements is None:
             raise TypeError("mesh object must expose p/t or points/elements-style arrays")
 
-        points_array = _as_dimension_first(points)
-        elements_array = _as_index_connectivity(elements, points_array.shape[1])
-        facets_array = None if facets is None else _as_index_connectivity(facets, points_array.shape[1])
+        points_array = _as_dimension_first(points, prefer_point_rows=point_name != "p")
+        elements_array = _as_index_connectivity(elements, points_array.shape[1], prefer_item_rows=element_name != "t")
+        facets_array = None if facets is None else _as_index_connectivity(facets, points_array.shape[1], prefer_item_rows=facet_name in {"faces", "edges", "boundary_facets"})
         return cls(points=points_array, elements=elements_array, facets=facets_array, facet_labels=facet_labels, source=source, backend=backend)
 
     @classmethod
@@ -236,19 +236,26 @@ def _skfem_facet_labels(mesh: Any) -> FacetLabels | None:
 
 
 def _first_attr(obj: Any, names: tuple[str, ...], *, required: bool = True) -> Any:
+    _, value = _first_named_attr(obj, names, required=required)
+    return value
+
+
+def _first_named_attr(obj: Any, names: tuple[str, ...], *, required: bool = True) -> tuple[str | None, Any]:
     for name in names:
         if hasattr(obj, name):
             value = getattr(obj, name)
-            return value() if callable(value) else value
+            return name, value() if callable(value) else value
     if required:
         raise AttributeError(f"none of {names!r} found")
-    return None
+    return None, None
 
 
-def _as_dimension_first(values: Any) -> Array:
+def _as_dimension_first(values: Any, *, prefer_point_rows: bool = False) -> Array:
     array = np.asarray(values, dtype=float)
     if array.ndim != 2:
         raise ValueError("point coordinates must be a 2D array")
+    if prefer_point_rows and array.shape[1] <= 3 and array.shape[0] > array.shape[1]:
+        return array.T
     if array.shape[0] <= 3:
         return array
     if array.shape[1] <= 3:
@@ -256,19 +263,44 @@ def _as_dimension_first(values: Any) -> Array:
     raise ValueError("cannot infer coordinate array orientation")
 
 
-def _as_index_connectivity(values: Any, npoints: int) -> IndexArray:
+def _as_index_connectivity(values: Any, npoints: int, *, prefer_item_rows: bool = True) -> IndexArray:
     array = np.asarray(values, dtype=np.int64)
     if array.ndim != 2:
         raise ValueError("connectivity must be a 2D array")
     if array.size == 0:
         return array
     if array.max() < npoints:
-        if array.shape[0] <= array.shape[1]:
-            return array
-        return array.T
+        return _orient_connectivity(array, prefer_item_rows=prefer_item_rows)
     if array.T.max() < npoints:
-        return array.T
+        return _orient_connectivity(array.T, prefer_item_rows=prefer_item_rows)
     raise ValueError("connectivity contains indices outside points")
+
+
+def _orient_connectivity(array: IndexArray, *, prefer_item_rows: bool) -> IndexArray:
+    """Return connectivity as (nodes_per_item, nitems)."""
+
+    common_node_counts = {1, 2, 3, 4, 6, 8, 10, 20, 27}
+    rows, cols = array.shape
+    rows_common = rows in common_node_counts
+    cols_common = cols in common_node_counts
+
+    if rows_common and not cols_common:
+        return array
+    if cols_common and not rows_common:
+        return array.T
+    if rows == 1 and cols > 1:
+        return array.T
+    if cols == 1:
+        return array
+    if prefer_item_rows and cols_common:
+        return array.T
+    if not prefer_item_rows and rows_common:
+        return array
+    if rows > cols and cols_common:
+        return array.T
+    if rows <= cols:
+        return array
+    return array.T
 
 
 def _infer_boundary_facets(elements: IndexArray, dimension: int) -> IndexArray | None:

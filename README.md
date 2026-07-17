@@ -37,12 +37,12 @@ git clone git@github.com:kevin-tofu/mesh-metrics.git
 cd mesh-metrics
 python -m pip install --user pipx
 pipx install poetry
-poetry install --with dev
+poetry install --with dev --extras all
 poetry run python -c "import mesh_metrics; print(mesh_metrics.__name__)"
 poetry run pytest -q
 ```
 
-`poetry install --with dev` installs the package in editable mode together with the development dependency group.
+`poetry install --with dev --extras all` installs the package in editable mode together with the development dependency group and optional mesh backends used by the backend tests.
 
 MMG3D is not bundled. Install `mmg3d` separately and make sure it is available on `PATH`, or pass `--mmg3d-bin`.
 
@@ -156,7 +156,9 @@ Install the optional backend first:
 pip install "mesh-metrics[fluxfem]"
 ```
 
-For in-memory mesh objects, use `MeshGeometry.from_object`. It accepts common `fluxfem`-style attribute names:
+For in-memory mesh objects, use `MeshGeometry.from_object`. In the examples below, `flux_mesh` is the mesh object you already have in a `fluxfem` application, for example one returned by your mesh generator, file-loading layer, preprocessing step, or solver setup. `mesh-metrics` does not create a `fluxfem` mesh; it adapts the mesh-like object you pass in.
+
+`MeshGeometry.from_object` accepts common `fluxfem`-style attribute names:
 
 - coordinates: `points`, `vertices`, `nodes`, `coords`, or `coordinates`
 - element connectivity: `elements`, `cells`, `connectivity`, or `t`
@@ -166,13 +168,50 @@ For in-memory mesh objects, use `MeshGeometry.from_object`. It accepts common `f
 ```python
 from mesh_metrics import MeshGeometry, MeshStatistics
 
-# flux_mesh can be a fluxfem mesh or any object exposing points/elements-style arrays.
+# flux_mesh comes from your fluxfem-side setup code.
 mesh = MeshGeometry.from_object(flux_mesh, backend="fluxfem")
 stats = MeshStatistics.from_mesh(mesh)
 
 print(stats.elements.measure.total)
 print(stats.elements.edge_aspect_ratio.max)
 print(stats.facets.diameter.p95)
+```
+
+If your fluxfem workflow keeps mesh arrays separately, wrap them in a small adapter object:
+
+```python
+from dataclasses import dataclass
+
+import numpy as np
+
+from mesh_metrics import MeshGeometry, MeshStatistics
+
+
+@dataclass
+class FluxMeshAdapter:
+    points: np.ndarray
+    elements: np.ndarray
+    faces: np.ndarray | None = None
+    facet_labels: dict[str, list[int]] | None = None
+
+
+flux_mesh = FluxMeshAdapter(
+    points=np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    ),
+    elements=np.asarray([[0, 1, 2, 3]]),
+    faces=np.asarray([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]),
+    facet_labels={"wall": [0, 1, 2], "outlet": [3]},
+)
+
+mesh = MeshGeometry.from_object(flux_mesh, backend="fluxfem")
+stats = MeshStatistics.from_mesh(mesh)
+print(stats.facets.labels["wall"].measure.mean)
 ```
 
 If your object does not expose labels in a supported attribute, attach them explicitly:
@@ -307,7 +346,7 @@ Set up the repository:
 ```bash
 git clone git@github.com:kevin-tofu/mesh-metrics.git
 cd mesh-metrics
-poetry install --with dev
+poetry install --with dev --extras all
 ```
 
 Run the local checks:
@@ -323,11 +362,11 @@ When dependencies change, update the lock file and verify the package again:
 
 ```bash
 poetry lock
-poetry install --with dev
+poetry install --with dev --extras all
 poetry run pytest -q
 poetry build
 ```
 
-The GitHub Actions workflow runs `poetry install --with dev`, `poetry check`, and `pytest` on Python 3.12.
+The GitHub Actions workflow runs `poetry install --with dev --extras all`, `poetry check`, and `pytest` on Python 3.12.
 
 The package is licensed under the Apache License 2.0.
