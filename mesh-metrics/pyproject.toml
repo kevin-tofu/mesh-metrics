@@ -1,6 +1,6 @@
 [project]
 name = "mesh-metrics"
-version = "0.1.1"
+version = "0.1.2"
 description = "Mesh quality metrics, facet statistics, visualization, and MMG3D remeshing workflow helpers."
 readme = "README.md"
 license = "Apache-2.0"

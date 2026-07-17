@@ -11,7 +11,7 @@ from mesh_metrics.iterations import IterationSeries
 from mesh_metrics.regions import CurveRegion, RegionSet, RegionSpecSet, SurfaceRegion
 from mesh_metrics.remesh import Mmg3dRecommendation, run_mmg3d
 from mesh_metrics.size_field import SizeField, load_facet_size_map
-from mesh_metrics.stats import MeshStatistics
+from mesh_metrics.stats import MeshStatistics, SamplingConfig
 from mesh_metrics.visualize import export_vtu
 
 
@@ -100,6 +100,28 @@ def test_facet_label_statistics_are_reported():
     assert payload["facets"]["labels"]["axis"]["measure"]["count"] == 2
     assert payload["facet_label_stats"]["axis"]["measure"]["count"] == 2
     assert np.isclose(payload["facet_label_stats"]["diagonal"]["measure"]["total"], np.sqrt(2.0))
+
+
+def test_mesh_statistics_can_sample_large_mesh_quantities():
+    points = np.asarray([[float(i) for i in range(21)], [0.0 for _ in range(21)]])
+    elements = np.asarray([[i for i in range(20)], [i + 1 for i in range(20)]])
+    facets = np.asarray([[i for i in range(21)]])
+    labels = FacetLabels({"left": np.arange(0, 10), "right": np.arange(10, 21)})
+    mesh = MeshGeometry(points=points, elements=elements, facets=facets, facet_labels=labels)
+
+    stats = MeshStatistics.from_mesh(
+        mesh,
+        sampling=SamplingConfig(max_elements=5, max_facets=7, max_facets_per_label=3, seed=1),
+    )
+    payload = stats.to_dict()
+
+    assert stats.element_diameter.count == 5
+    assert stats.facet_diameter.count == 7
+    assert stats.facets.labels["left"].diameter.count == 3
+    assert stats.facets.labels["right"].diameter.count == 3
+    assert payload["sampling"]["sampled_elements"] == 5
+    assert payload["sampling"]["sampled_facets"] == 7
+    assert payload["sampling"]["element_count"] == 20
 
 
 def test_mesh_geometry_exposes_facet_geometry():

@@ -97,6 +97,34 @@ stats.save_histograms("result/histograms")
 
 If `facets` is omitted, boundary facets are inferred for common triangle, quad, tetrahedron, and hexahedron meshes.
 
+### Sampled Statistics For Large Meshes
+
+For large meshes, compute representative statistics from random samples instead of traversing every element and facet. This is useful inside optimization loops, where mean, p95, max, and histograms are needed quickly and exact totals are less important than iteration speed.
+
+```python
+from mesh_metrics import MeshGeometry, MeshStatistics, SamplingConfig
+
+mesh = MeshGeometry.load("large.mesh", backend="meshio")
+
+stats = MeshStatistics.from_mesh(
+    mesh,
+    bins=40,
+    sampling=SamplingConfig(
+        max_elements=50_000,
+        max_facets=30_000,
+        max_facets_per_label=5_000,
+        seed=7,
+    ),
+)
+
+print(stats.elements.edge_aspect_ratio.p95)
+print(stats.facets.diameter.p95)
+print(stats.facets.labels["contact"].diameter.mean)
+print(stats.to_dict()["sampling"])
+```
+
+Without `sampling=...`, `MeshStatistics.from_mesh` remains exact. With sampling enabled, quantity `count`, histograms, and label-wise statistics describe the sampled subset; `stats.to_dict()["sampling"]` records the original mesh counts and sampled counts so downstream optimization tools can distinguish sampled diagnostics from exact reports.
+
 ### From a scikit-fem mesh
 
 Install the optional backend first:
