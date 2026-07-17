@@ -38,51 +38,29 @@ cd mesh-metrics
 python -m pip install --user pipx
 pipx install poetry
 poetry install --with dev
-poetry run mesh-metrics --help
+poetry run python -c "import mesh_metrics; print(mesh_metrics.__name__)"
 poetry run pytest -q
 ```
 
-`poetry install --with dev` installs the package in editable mode together with the development dependency group. If your shell cannot find `mesh-metrics` directly, use `poetry run mesh-metrics ...` inside the repository.
+`poetry install --with dev` installs the package in editable mode together with the development dependency group.
 
 MMG3D is not bundled. Install `mmg3d` separately and make sure it is available on `PATH`, or pass `--mmg3d-bin`.
 
-## Command Line
-
-Compute statistics and write JSON plus histogram PNGs:
-
-```bash
-mesh-metrics stats mesh.mesh \
-  --backend meshio \
-  --json result/stats.json \
-  --hist-dir result/histograms
-```
-
-Use facet labels:
-
-```json
-{
-  "wall": [0, 1, 2, 3],
-  "inlet": [4, 5],
-  "outlet": [6, 7]
-}
-```
-
-```bash
-mesh-metrics stats mesh.mesh \
-  --backend meshio \
-  --facet-labels facet_labels.json \
-  --json result/stats.json \
-  --hist-dir result/histograms
-```
-
-The JSON separates element quality and facet size data:
-
-- `elements`: element measure, diameter, and edge aspect ratio.
-- `facets`: facet measure, diameter, edge aspect ratio, and label-wise statistics.
-- `mesh_quality`: compatibility view focused on element quality.
-- `facet_size`: compatibility view focused on facet sizing.
-
 ## Python API
+
+The core API has two steps:
+
+1. Convert a mesh object or file into `MeshGeometry`.
+2. Build `MeshStatistics` from that geometry.
+
+`MeshStatistics` intentionally separates element quality from facet sizing:
+
+- `stats.elements`: element measure, diameter, and edge aspect ratio.
+- `stats.facets`: facet measure, diameter, edge aspect ratio, and label-wise facet statistics.
+- `stats.histograms`: histogram data for element and facet quantities.
+- `stats.to_dict()`: JSON-serializable output for reports, optimization loops, or remeshing drivers.
+
+### From arrays
 
 ```python
 import numpy as np
@@ -111,7 +89,115 @@ print(stats.facets.labels["wall"].diameter.median)
 stats.save_histograms("result/histograms")
 ```
 
-Load from a file through a backend:
+`MeshGeometry` expects dimension-first arrays:
+
+- `points`: shape `(dimension, npoints)`
+- `elements`: shape `(nodes_per_element, nelements)`
+- `facets`: shape `(nodes_per_facet, nfacets)`
+
+If `facets` is omitted, boundary facets are inferred for common triangle, quad, tetrahedron, and hexahedron meshes.
+
+### From a scikit-fem mesh
+
+Install the optional backend first:
+
+```bash
+pip install "mesh-metrics[skfem]"
+```
+
+Then pass a `skfem` mesh directly:
+
+```python
+from skfem import MeshTet
+
+from mesh_metrics import MeshGeometry, MeshStatistics
+
+sk_mesh = MeshTet().refined(2)
+
+mesh = MeshGeometry.from_skfem(sk_mesh)
+stats = MeshStatistics.from_mesh(mesh, bins=40)
+
+print("elements:", mesh.nelements)
+print("facets:", mesh.nfacets)
+print("element volume mean:", stats.elements.measure.mean)
+print("element aspect p95:", stats.elements.edge_aspect_ratio.p95)
+print("facet area median:", stats.facets.measure.median)
+```
+
+`MeshGeometry.from_skfem` reads `mesh.p`, `mesh.t`, `mesh.facets`, and `mesh.boundaries` when present. `mesh.boundaries` becomes `FacetLabels`, so named boundaries are available in `stats.facets.labels`.
+
+For labeled `skfem` boundaries:
+
+```python
+from skfem import MeshTri
+
+from mesh_metrics import MeshGeometry, MeshStatistics
+
+sk_mesh = MeshTri().refined(3).with_boundaries(
+    {
+        "left": lambda x: x[0] == 0.0,
+        "right": lambda x: x[0] == 1.0,
+    }
+)
+
+mesh = MeshGeometry.from_skfem(sk_mesh)
+stats = MeshStatistics.from_mesh(mesh)
+
+left = stats.facets.labels["left"]
+print(left.measure.count)
+print(left.diameter.mean)
+```
+
+### From a fluxfem-style mesh object
+
+Install the optional backend first:
+
+```bash
+pip install "mesh-metrics[fluxfem]"
+```
+
+For in-memory mesh objects, use `MeshGeometry.from_object`. It accepts common `fluxfem`-style attribute names:
+
+- coordinates: `points`, `vertices`, `nodes`, `coords`, or `coordinates`
+- element connectivity: `elements`, `cells`, `connectivity`, or `t`
+- facet connectivity: `facets`, `faces`, `edges`, or `boundary_facets`
+- labels: `facet_labels`, `boundary_labels`, or `boundaries`
+
+```python
+from mesh_metrics import MeshGeometry, MeshStatistics
+
+# flux_mesh can be a fluxfem mesh or any object exposing points/elements-style arrays.
+mesh = MeshGeometry.from_object(flux_mesh, backend="fluxfem")
+stats = MeshStatistics.from_mesh(mesh)
+
+print(stats.elements.measure.total)
+print(stats.elements.edge_aspect_ratio.max)
+print(stats.facets.diameter.p95)
+```
+
+If your object does not expose labels in a supported attribute, attach them explicitly:
+
+```python
+from mesh_metrics import FacetLabels, MeshGeometry, MeshStatistics
+
+mesh = MeshGeometry.from_object(flux_mesh, backend="fluxfem")
+mesh = mesh.with_facet_labels(
+    FacetLabels(
+        {
+            "wall": [0, 1, 2, 3],
+            "inlet": [4, 5],
+            "outlet": [6, 7],
+        }
+    )
+)
+
+stats = MeshStatistics.from_mesh(mesh)
+print(stats.facets.labels["wall"].measure.mean)
+```
+
+### From mesh files
+
+Use `MeshGeometry.load` when you want the backend to read a file:
 
 ```python
 from mesh_metrics import MeshGeometry, MeshStatistics
@@ -121,107 +207,98 @@ stats = MeshStatistics.from_mesh(mesh)
 payload = stats.to_dict()
 ```
 
-## Visualization
+Available file backends are `meshio`, `skfem`, and `fluxfem`.
 
-Export mesh and facet VTU files:
-
-```bash
-mesh-metrics export-vtu mesh.mesh \
-  --backend meshio \
-  --facet-labels facet_labels.json \
-  --mesh-vtu result/mesh.vtu \
-  --facets-vtu result/facets.vtu
+```python
+mesh = MeshGeometry.load("mesh.vtu", backend="meshio")
+mesh = MeshGeometry.load("mesh.msh", backend="skfem")
+mesh = MeshGeometry.load("mesh.mesh", backend="fluxfem")
 ```
 
-Render element quality or facet size:
+The `fluxfem` file backend currently uses `meshio` as the file adapter while keeping `backend="fluxfem"` in the resulting `MeshGeometry`.
 
-```bash
-mesh-metrics render-vtu result/mesh.vtu result/mesh_aspect.png \
-  --scalar element_edge_aspect_ratio
+### Reading statistics
 
-mesh-metrics render-vtu result/facets.vtu result/facet_size.png \
-  --scalar facet_diameter
+```python
+stats = MeshStatistics.from_mesh(mesh, bins=50)
+
+element_quality = stats.elements
+facet_size = stats.facets
+
+print(element_quality.measure.min)
+print(element_quality.measure.max)
+print(element_quality.edge_aspect_ratio.mean)
+print(element_quality.edge_aspect_ratio.p95)
+
+print(facet_size.measure.mean)
+print(facet_size.diameter.p05)
+print(facet_size.diameter.p95)
 ```
 
-Render selected labeled regions:
+Each quantity is a `QuantityStats` dataclass:
 
-```bash
-mesh-metrics render-regions result/facets.vtu result/wall_region.png \
-  --legend result/facets_vtu.json \
-  --label wall
+```python
+q = stats.elements.edge_aspect_ratio
+
+print(q.count)
+print(q.min, q.max)
+print(q.mean, q.median, q.std)
+print(q.p05, q.p25, q.p75, q.p95)
 ```
 
-## MMG3D Workflow
+Label-wise facet statistics are stored under `stats.facets.labels`:
 
-Generate a size field from facet labels:
-
-```bash
-mesh-metrics size-field input.mesh metric.sol \
-  --backend meshio \
-  --facet-labels facet_labels.json \
-  --facet-size-map facet_sizes.json \
-  --target-elements 50000 \
-  --json result/size_field.json
+```python
+for label, label_stats in stats.facets.labels.items():
+    print(label)
+    print("facet count:", label_stats.measure.count)
+    print("area mean:", label_stats.measure.mean)
+    print("diameter p95:", label_stats.diameter.p95)
 ```
 
-Run MMG3D with automatic sizing recommendations:
+### Histograms and report data
 
-```bash
-mesh-metrics remesh input.mesh remeshed.mesh \
-  --backend meshio \
-  --auto \
-  --target-elements 50000 \
-  --json result/remesh.json
+Save all histograms as PNG files:
+
+```python
+stats = MeshStatistics.from_mesh(mesh, bins=40)
+paths = stats.save_histograms("result/histograms")
 ```
 
-Evaluate a remeshed result:
+Use `to_dict` for optimization tools, reports, or JSON output:
 
-```bash
-mesh-metrics evaluate input.mesh remeshed.mesh \
-  --backend meshio \
-  --facet-labels original_labels.json \
-  --after-facet-labels remeshed_labels.json \
-  --facet-size-map facet_sizes.json \
-  --target-elements 50000 \
-  --json result/evaluation.json \
-  --suggest-relaxation \
-  --suggested-facet-size-map result/next_facet_sizes.json
+```python
+import json
+from pathlib import Path
+
+payload = stats.to_dict()
+Path("result/stats.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 ```
 
-Plot iteration metrics with ranges:
+Omit histogram arrays when the mesh is large:
 
-```bash
-mesh-metrics plot-iterations result/iter_000 result/iter_001 result/iter_002 \
-  result/metrics_vs_iteration_with_ranges.png \
-  --csv result/metrics_with_ranges.csv \
-  --json result/metrics_with_ranges.json
+```python
+payload = stats.to_dict(include_histograms=False)
 ```
 
-## Region Transfer
+### Visualization and remeshing helpers
 
-After remeshing, facet IDs usually change. `mesh-metrics` provides region metadata and transfer tools so that original surface labels can be mapped onto the remeshed facets.
+The Python API also exposes VTU export, PNG rendering, MMG3D execution metadata, size fields, region transfer, and iteration plots:
 
-Create region metadata from labeled facets:
+```python
+from mesh_metrics import SizeField, export_vtu
 
-```bash
-mesh-metrics init-regions input.mesh regions.json \
-  --backend meshio \
-  --facet-labels facet_labels.json \
-  --include-exterior-curves
+field = SizeField.from_mesh(
+    mesh,
+    default_size=0.5,
+    facet_size_map={"wall": 0.1, "inlet": 0.2},
+)
+field.write_mmg_sol("metric.sol", dimension=mesh.dimension)
+
+export_vtu(mesh, mesh_path="result/mesh.vtu", facets_path="result/facets.vtu")
 ```
 
-Transfer labels to a remeshed mesh:
-
-```bash
-mesh-metrics transfer-regions input.mesh remeshed.mesh remeshed_labels.json \
-  --backend meshio \
-  --regions regions.json \
-  --source-facet-labels facet_labels.json \
-  --target-facets-vtu result/remeshed_facets.vtu \
-  --json result/transfer.json
-```
-
-This is useful when one selected surface should remain fine while the rest of the mesh is allowed to coarsen toward a target element count.
+The command line interface is available as `mesh-metrics`, but the library is designed so optimization and remeshing loops can use these dataclasses directly.
 
 ## Development
 
@@ -236,7 +313,7 @@ poetry install --with dev
 Run the local checks:
 
 ```bash
-poetry run mesh-metrics --help
+poetry run python -c "from mesh_metrics import MeshGeometry, MeshStatistics; print(MeshGeometry, MeshStatistics)"
 poetry run pytest -q
 poetry check
 poetry build
